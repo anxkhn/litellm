@@ -23,6 +23,7 @@ from litellm.proxy._experimental.mcp_server.outbound_credentials.types import (
     AuthorizationCodeConfig,
     CredError,
     NoneConfig,
+    PassthroughConfig,
     SharedKey,
 )
 from litellm.types.mcp import MCPAuth, MCPTransport
@@ -65,9 +66,7 @@ def test_authorization_schemes_map_with_their_prefix(auth_type, prefix):
 
 
 def test_basic_scheme_base64_encodes_the_token():
-    spec = to_server_spec(
-        _server(auth_type=MCPAuth.basic, authentication_token="user:pass")
-    )
+    spec = to_server_spec(_server(auth_type=MCPAuth.basic, authentication_token="user:pass"))
     assert spec is not None and isinstance(spec.config, ApiKeyConfig)
     assert spec.config.value_prefix == "Basic"
     expected = base64.b64encode(b"user:pass").decode()
@@ -89,22 +88,22 @@ def test_oauth2_user_token_maps_to_authorization_code(oauth2_flow):
     [
         _server(auth_type=MCPAuth.api_key),  # no token configured
         _server(auth_type=MCPAuth.bearer_token),  # no token configured
-        _server(
-            auth_type=MCPAuth.oauth2, oauth2_flow="client_credentials"
-        ),  # M2M -> v1
-        _server(
-            auth_type=MCPAuth.oauth2, delegate_auth_to_upstream=True
-        ),  # delegated upstream OAuth -> v1
+        _server(auth_type=MCPAuth.oauth2, oauth2_flow="client_credentials"),  # M2M -> v1
+        _server(auth_type=MCPAuth.oauth2, delegate_auth_to_upstream=True),  # delegated upstream OAuth -> v1
         _server(auth_type=MCPAuth.oauth2_token_exchange),
         _server(auth_type=MCPAuth.aws_sigv4),
-        _server(
-            auth_type=None, oauth_passthrough=True, extra_headers=["Authorization"]
-        ),
+        _server(auth_type=None, oauth_passthrough=True, extra_headers=["Authorization"]),
     ],
 )
 def test_unmigrated_modes_defer_to_v1(server):
     # A None spec is the defer signal; the caller falls back to v1.
     assert to_server_spec(server) is None
+
+
+@pytest.mark.parametrize("auth_type", [MCPAuth.true_passthrough, MCPAuth.oauth_delegate])
+def test_client_forwarded_modes_map_to_passthrough_config(auth_type):
+    spec = to_server_spec(_server(auth_type=auth_type))
+    assert spec is not None and isinstance(spec.config, PassthroughConfig)
 
 
 @pytest.mark.parametrize(
@@ -115,9 +114,7 @@ def test_unmigrated_modes_defer_to_v1(server):
         # static token must not route a BYOK server to a v2 shared-key spec with the wrong value.
         _server(auth_type=MCPAuth.bearer_token, is_byok=True, authentication_token="x"),
         _server(auth_type=MCPAuth.basic, is_byok=True, authentication_token="x"),
-        _server(
-            auth_type=MCPAuth.authorization, is_byok=True, authentication_token="x"
-        ),
+        _server(auth_type=MCPAuth.authorization, is_byok=True, authentication_token="x"),
         _server(auth_type=MCPAuth.token, is_byok=True, authentication_token="x"),
         _server(auth_type=None, is_byok=True),
     ],
@@ -161,9 +158,7 @@ def test_raise_public_maps_each_error_to_its_status(error, status):
 
 def test_raise_public_emits_unauthorized_challenge():
     body = {"error": "byok_auth_required", "server_id": "s1"}
-    error = CredError.of_unauthorized(
-        "needs key", www_authenticate='Bearer resource_metadata="/x"', body=body
-    )
+    error = CredError.of_unauthorized("needs key", www_authenticate='Bearer resource_metadata="/x"', body=body)
     with pytest.raises(HTTPException) as exc_info:
         raise_public(error)
     exc = exc_info.value
@@ -191,8 +186,7 @@ def test_raise_user_oauth_challenge_points_at_per_server_prm():
     exc = exc_info.value
     assert exc.status_code == 401
     assert (
-        exc.headers["WWW-Authenticate"]
-        == 'Bearer resource_metadata="/.well-known/oauth-protected-resource/mcp/my-srv"'
+        exc.headers["WWW-Authenticate"] == 'Bearer resource_metadata="/.well-known/oauth-protected-resource/mcp/my-srv"'
     )
 
 

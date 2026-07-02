@@ -1,7 +1,7 @@
 """Tests for the resolver dispatch: live arms produce auth, stubbed arms fail closed.
 
-`none`, `api_key` (shared-key source), and `authorization_code` are implemented; every other arm,
-plus the `api_key` BYOK source, returns a typed `not_implemented` error until its mode lands.
+`none`, `api_key` (shared-key source), `passthrough`, and `authorization_code` are implemented; every
+other arm, plus the `api_key` BYOK source, returns a typed `not_implemented` error until its mode lands.
 Parametrizing the stubs over one config each also guards reachability: a dropped `case` would hit
 `assert_never` and raise instead of returning the stub.
 """
@@ -37,9 +37,7 @@ _SUBJECT = Subject(tenant_id="", subject_id="")
 
 
 def _spec(config):
-    return ServerSpec(
-        server_id="s", resource="https://upstream.example.com", config=config
-    )
+    return ServerSpec(server_id="s", resource="https://upstream.example.com", config=config)
 
 
 def _emitted(auth: httpx.Auth) -> httpx.Headers:
@@ -52,9 +50,7 @@ def _emitted(auth: httpx.Auth) -> httpx.Headers:
 
 @pytest.mark.asyncio
 async def test_none_mode_yields_a_no_op_auth():
-    result = await UpstreamCredentialProvider().resolve_credentials(
-        _SUBJECT, _spec(NoneConfig())
-    )
+    result = await UpstreamCredentialProvider().resolve_credentials(_SUBJECT, _spec(NoneConfig()))
     assert isinstance(result, Ok)
     assert isinstance(result.ok, NoOpAuth)
 
@@ -66,9 +62,7 @@ async def test_api_key_shared_emits_the_configured_header():
         value_prefix="",
         key_source=SharedKey(value=SecretStr("secret-key")),
     )
-    result = await UpstreamCredentialProvider().resolve_credentials(
-        _SUBJECT, _spec(config)
-    )
+    result = await UpstreamCredentialProvider().resolve_credentials(_SUBJECT, _spec(config))
     assert isinstance(result, Ok)
     assert isinstance(result.ok, StaticHeaderAuth)
     assert _emitted(result.ok)["X-API-Key"] == "secret-key"
@@ -81,9 +75,7 @@ async def test_api_key_shared_honors_authorization_scheme():
         value_prefix="Bearer",
         key_source=SharedKey(value=SecretStr("tok")),
     )
-    result = await UpstreamCredentialProvider().resolve_credentials(
-        _SUBJECT, _spec(config)
-    )
+    result = await UpstreamCredentialProvider().resolve_credentials(_SUBJECT, _spec(config))
     assert isinstance(result, Ok)
     assert _emitted(result.ok)["Authorization"] == "Bearer tok"
 
@@ -101,9 +93,7 @@ class _FakeTokenStore:
 @pytest.mark.asyncio
 async def test_authorization_code_emits_bearer_for_a_stored_token():
     store = _FakeTokenStore({("alice", "s"): OAuthToken(access_token="at-alice")})
-    result = await UpstreamCredentialProvider(
-        oauth_token_store=store
-    ).resolve_credentials(
+    result = await UpstreamCredentialProvider(oauth_token_store=store).resolve_credentials(
         Subject(tenant_id="", subject_id="alice"), _spec(AuthorizationCodeConfig())
     )
     assert isinstance(result, Ok)
@@ -112,9 +102,7 @@ async def test_authorization_code_emits_bearer_for_a_stored_token():
 
 @pytest.mark.asyncio
 async def test_authorization_code_without_token_is_semantically_unauthorized():
-    result = await UpstreamCredentialProvider(
-        oauth_token_store=_FakeTokenStore({})
-    ).resolve_credentials(
+    result = await UpstreamCredentialProvider(oauth_token_store=_FakeTokenStore({})).resolve_credentials(
         Subject(tenant_id="", subject_id="alice"), _spec(AuthorizationCodeConfig())
     )
     assert isinstance(result, Error)
@@ -131,9 +119,7 @@ async def test_authorization_code_store_unavailable_is_unauthorized():
         async def fetch(self, user_id: str, server_id: str):
             raise TokenStoreUnavailable("down")
 
-    result = await UpstreamCredentialProvider(
-        oauth_token_store=_Unavailable()
-    ).resolve_credentials(
+    result = await UpstreamCredentialProvider(oauth_token_store=_Unavailable()).resolve_credentials(
         Subject(tenant_id="", subject_id="alice"), _spec(AuthorizationCodeConfig())
     )
     assert isinstance(result, Error)
@@ -156,22 +142,15 @@ async def test_authorization_code_isolates_by_subject():
     alice = await provider.resolve_credentials(
         Subject(tenant_id="", subject_id="alice"), _spec(AuthorizationCodeConfig())
     )
-    bob = await provider.resolve_credentials(
-        Subject(tenant_id="", subject_id="bob"), _spec(AuthorizationCodeConfig())
-    )
-    assert (
-        isinstance(alice, Ok)
-        and _emitted(alice.ok)["Authorization"] == "Bearer at-alice"
-    )
+    bob = await provider.resolve_credentials(Subject(tenant_id="", subject_id="bob"), _spec(AuthorizationCodeConfig()))
+    assert isinstance(alice, Ok) and _emitted(alice.ok)["Authorization"] == "Bearer at-alice"
     assert isinstance(bob, Error) and bob.error.tag == "unauthorized"
 
 
 @pytest.mark.asyncio
 async def test_has_user_token_reflects_the_stored_token():
     present = UpstreamCredentialProvider(
-        oauth_token_store=_FakeTokenStore(
-            {("alice", "s"): OAuthToken(access_token="at")}
-        )
+        oauth_token_store=_FakeTokenStore({("alice", "s"): OAuthToken(access_token="at")})
     )
     absent = UpstreamCredentialProvider(oauth_token_store=_FakeTokenStore({}))
     spec = _spec(AuthorizationCodeConfig())
@@ -185,15 +164,27 @@ async def test_has_user_token_false_for_a_non_per_user_mode():
     # A none-mode server has no per-user token to check.
     provider = UpstreamCredentialProvider()
     spec = _spec(NoneConfig())
-    assert (
-        await provider.has_user_token(Subject(tenant_id="", subject_id="a"), spec)
-        is False
-    )
+    assert await provider.has_user_token(Subject(tenant_id="", subject_id="a"), spec) is False
+
+
+@pytest.mark.asyncio
+async def test_passthrough_forwards_the_inbound_token_verbatim():
+    subject = Subject(tenant_id="", subject_id="", inbound_token=SecretStr("Bearer upstream-xyz"))
+    result = await UpstreamCredentialProvider().resolve_credentials(subject, _spec(PassthroughConfig()))
+    assert isinstance(result, Ok)
+    assert isinstance(result.ok, StaticHeaderAuth)
+    assert _emitted(result.ok)["Authorization"] == "Bearer upstream-xyz"
+
+
+@pytest.mark.asyncio
+async def test_passthrough_without_inbound_token_is_a_no_op():
+    result = await UpstreamCredentialProvider().resolve_credentials(_SUBJECT, _spec(PassthroughConfig()))
+    assert isinstance(result, Ok)
+    assert isinstance(result.ok, NoOpAuth)
 
 
 _STUBBED = [
     ("api_key_byok", ApiKeyConfig(key_source=Byok())),
-    ("passthrough", PassthroughConfig()),
     ("client_credentials", ClientCredentialsConfig()),
     ("token_exchange", TokenExchangeConfig()),
     ("aws_sigv4", AwsSigV4Config(region="us-east-1")),
@@ -203,8 +194,6 @@ _STUBBED = [
 @pytest.mark.asyncio
 @pytest.mark.parametrize("label, config", _STUBBED)
 async def test_unbuilt_arms_fail_closed_with_not_implemented(label, config):
-    result = await UpstreamCredentialProvider().resolve_credentials(
-        _SUBJECT, _spec(config)
-    )
+    result = await UpstreamCredentialProvider().resolve_credentials(_SUBJECT, _spec(config))
     assert isinstance(result, Error)
     assert result.error.tag == "not_implemented"
