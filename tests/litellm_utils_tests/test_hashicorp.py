@@ -409,6 +409,56 @@ def test_hashicorp_custom_mount_and_prefix(hashicorp_secret_manager):
         hashicorp_secret_manager.vault_namespace = original_namespace
 
 
+@pytest.mark.parametrize(
+    "malicious_secret_name",
+    [
+        "../../../other-app/creds",
+        "litellm/../../secret",
+        "foo\nbar",
+        "foo bar",
+        "foo bar",
+        "foo\x85bar",
+    ],
+)
+def test_hashicorp_get_url_rejects_path_traversal(monkeypatch, malicious_secret_name):
+    """
+    Regression test: get_url must reject an invalid secret_name instead of
+    building a URL from it.
+
+    Uses monkeypatch + a directly-constructed manager (not the shared
+    hashicorp_secret_manager fixture) so this runs in CI without real Vault
+    credentials configured; get_url performs no I/O.
+    """
+    monkeypatch.setenv("HCP_VAULT_TOKEN", "test-token-for-get-url-only")
+    manager = HashicorpSecretManager()
+
+    with pytest.raises(ValueError):
+        manager.get_url(malicious_secret_name)
+
+
+def test_hashicorp_get_url_encodes_reserved_url_characters(monkeypatch):
+    """
+    Regression test: get_url must percent-encode reserved URL characters in
+    secret_name while still preserving "/" (hierarchical paths) and "@" (e.g.
+    emails in aliases) unencoded, matching existing usage.
+    """
+    monkeypatch.setenv("HCP_VAULT_TOKEN", "test-token-for-get-url-only")
+    manager = HashicorpSecretManager()
+    manager.vault_namespace = None
+    manager.vault_path_prefix = None
+
+    url = manager.get_url("foo#bar")
+    assert "#" not in url
+    assert url.endswith("foo%23bar")
+
+    url = manager.get_url("foo?evil=1")
+    assert "?" not in url.split("/data/", 1)[1]
+    assert url.endswith("foo%3Fevil%3D1")
+
+    url = manager.get_url("team/user@example.com")
+    assert url.endswith("team/user@example.com")
+
+
 mock_old_vault_response = {
     "request_id": "80fafb6a-e96a-4c5b-29fa-ff505ac72201",
     "lease_id": "",
