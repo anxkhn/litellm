@@ -363,7 +363,7 @@ class DatabricksBase:
             if custom_endpoint:
                 raise DatabricksException(
                     status_code=400,
-                    message="Missing API Base - A call is being made to LLM Provider but no api base is set either in the environment variables ({LLM_PROVIDER}_API_KEY) or via params",
+                    message="Missing API Base - A call is being made to LLM Provider but no api base is set either in the environment variables ({LLM_PROVIDER}_API_BASE) or via params",
                 )
             else:
                 api_base, headers = self._get_databricks_credentials(
